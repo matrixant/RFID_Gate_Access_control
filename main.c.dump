@@ -1,0 +1,258 @@
+#include <driverlib.h>
+#include "AD7799.h"
+#include <string.h>
+uint32_t i[10];
+uint32_t i1;
+uint32_t sum=0;
+
+void Uart_SendData(unsigned char lengh,unsigned char *ptr);
+void Uart_SendString(unsigned char *str);
+
+unsigned char bit_res[10]={0};
+void UART0Putchar( unsigned char iData);
+unsigned char UART0Getchar();
+unsigned char *myitoa(uint32_t value,unsigned char *str,int radix);
+void Uart_SendResult(unsigned char num[]);
+
+int main( void )
+{
+  // Stop watchdog timer to prevent time out reset
+  WDT_A_hold(WDT_A_BASE);
+  
+  P3DIR =0xf8;             //input
+  P3IFG &= ~0xff;          // IFG cleared
+  P3IE   =  0xff;          // interrupt enabled
+  P3IES  =  0xff;          // PHi/Lo edge
+  
+  GPIO_setAsOutputPin(
+                      GPIO_PORT_P1,
+                      GPIO_PIN4|GPIO_PIN5|GPIO_PIN6
+                        );
+  GPIO_setAsOutputPin(
+                      GPIO_PORT_P6,
+                      GPIO_PIN2|GPIO_PIN3
+                        );
+  GPIO_setOutputHighOnPin(GPIO_PORT_P6,GPIO_PIN2);
+  GPIO_setOutputLowOnPin(GPIO_PORT_P6,GPIO_PIN3);
+  GPIO_setAsInputPinWithPullUpResistor(GPIO_PORT_P1,GPIO_PIN7);
+  uint16_t delayl=10000;
+  
+  // Configure GPIO
+  P2SEL0 |= BIT0 | BIT1;                    // USCI_A0 UART operation
+  P2SEL1 &= ~(BIT0 | BIT1);
+  
+  // Disable the GPIO power-on default high-impedance mode to activate
+  // previously configured port settings
+  PM5CTL0 &= ~LOCKLPM5;
+  
+  // Startup clock system with max DCO setting ~8MHz
+  CSCTL0_H = CSKEY >> 8;                    // Unlock clock registers
+  
+  CSCTL1 = DCOFSEL_3 | DCORSEL;             // Set DCO to 8MHz
+  CSCTL2 = SELA__VLOCLK | SELS__DCOCLK | SELM__DCOCLK;
+  CSCTL3 = DIVA__1 | DIVS__1 | DIVM__1;     // Set all dividers
+  
+  CSCTL0_H = 0;                             // Lock CS registers
+  
+  
+  // Configure USCI_A0 for UART mode
+  UCA0CTLW0 = UCSWRST;                      // Put eUSCI in reset
+  UCA0CTLW0 |= UCSSEL__SMCLK;               // CLK = SMCLK
+  // Baud Rate calculation
+  // 8000000/(16*9600) = 52.083
+  // Fractional portion = 0.083
+  // User's Guide Table 21-4: UCBRSx = 0x04
+  // UCBRFx = int ( (52.083-52)*16) = 1
+  UCA0BR0 = 52;                             // 8000000/16/9600
+  UCA0BR1 = 0x00;
+  UCA0MCTLW |= UCOS16 | UCBRF_1 | 0x4900;
+  UCA0CTLW0 &= ~UCSWRST;                    // Initialize eUSCI
+  UCA0IE |= UCRXIE;                         // Enable USCI_A0 RX interrupt
+  
+  
+  TA0CCTL0 = CCIE;                          // TACCR0 interrupt enabled
+  TA0CCR0 = 8000;
+  TA0CTL = TASSEL__SMCLK | MC__UP;   // SMCLK, continuous mode
+  
+  
+  __bis_SR_register(GIE);       // Enter LPM3, interrupts enabled
+  __no_operation();                         // For debugger
+  
+  
+  //PMM_unlockLPM5();
+  uint8_t cn=0;
+  
+  while(1)
+  {
+    sum=0;
+    while(delayl--);
+    delayl=10000;
+    //GPIO_toggleOutputOnPin(GPIO_PORT_P1,GPIO_PIN0);
+    //     while(!(UCA1IFG&UCTXIFG));
+    //    UCA1TXBUF = 'a';
+    //i1=GPIO_getInputPinValue(GPIO_PORT_P3,AD7799_DOUT);
+    for(cn=0;cn<10;cn++)
+    {
+      i[cn]=ReadAd7799ConversionData();
+      sum=sum+i[cn];
+      //while(delayl--);
+      //delayl=100;
+    }
+    sum=sum/10;
+    myitoa(sum,bit_res,10);
+    Uart_SendResult(bit_res);
+    delayl=10000;
+  }
+  return 0;
+}
+
+// Port 1 interrupt service routine
+#pragma vector=PORT3_VECTOR
+__interrupt void Port_3(void)
+{ 
+  
+//   switch(P3IFG)
+//  {
+//   case 0x01: break;
+//   case 0x02: break;
+//   case 0x04: break;
+//   case 0x08: break;
+//   case 0x10: break;
+//   case 0x20: break;
+//   case 0x40: break;
+//   case 0x80: break;
+//   default:   break;
+//  }
+   Uart_SendString("interrupt!!!\r\n");
+   P3IFG &= ~0x0ff;         // P1 IFG cleared
+}
+
+// Timer0_A0 interrupt service routine
+#if defined(__TI_COMPILER_VERSION__) || defined(__IAR_SYSTEMS_ICC__)
+#pragma vector = TIMER0_A0_VECTOR
+__interrupt void Timer0_A0_ISR (void)
+#elif defined(__GNUC__)
+void __attribute__ ((interrupt(TIMER0_A0_VECTOR))) Timer0_A0_ISR (void)
+#else
+#error Compiler not supported!
+#endif
+{
+  static unsigned int time_ms;
+  static unsigned int time_s;
+  time_ms++;
+  if(time_ms==1000)
+  {
+    time_ms=0;
+    time_s++;
+    if(time_s==5)
+    {
+      time_s=0;
+      Uart_SendString("5s!!!\r\n");
+    }
+  }
+  
+}
+
+#if defined(__TI_COMPILER_VERSION__) || defined(__IAR_SYSTEMS_ICC__)
+#pragma vector=USCI_A0_VECTOR
+__interrupt void USCI_A0_ISR(void)
+#elif defined(__GNUC__)
+void __attribute__ ((interrupt(USCI_A0_VECTOR))) USCI_A0_ISR (void)
+#else
+#error Compiler not supported!
+#endif
+{
+  switch(__even_in_range(UCA0IV, USCI_UART_UCTXCPTIFG))
+  {
+   case USCI_NONE: break;
+   case USCI_UART_UCRXIFG:
+    while(!(UCA0IFG&UCTXIFG));
+    UCA0TXBUF = UCA0RXBUF;
+    __no_operation();
+    break;
+   case USCI_UART_UCTXIFG: break;
+   case USCI_UART_UCSTTIFG: break;
+   case USCI_UART_UCTXCPTIFG: break;
+  }
+}
+
+/*************************串口0发送1字节数据**************************/
+void UART0Putchar( unsigned char iData)
+{	 
+  UCA0TXBUF=iData;
+  while (!(UCA0IFG&UCTXIFG));             // USCI_A0 TX buffer ready?     
+}
+/*************************串口0接收1字节数据**************************/
+unsigned char UART0Getchar()
+{	 
+  while (!(UCA0IFG&UCRXIFG));             // USCI_A0 RX buffer ready?     
+  return  UCA0RXBUF;
+}
+
+unsigned char *myitoa(uint32_t value,unsigned char *str,int radix)//将数字转换成字母
+{
+  static char szMap[]={
+    '0',  '1',  '2',  '3',  '4',  '5',
+    '6',  '7',  '8',  '9',  'A',  'B',
+    'C',  'D',  'e',  'f',  'g',  'h',
+    'i',  'j',  'k',  'l',  'm',  'n',
+    'o',  'p',  'q',  'r',  's',  't',
+    'u',  'v',  'w',  'x',  'y',  'z'
+  }; //   字符映射表
+  int nCount = -1, nIndex;
+  unsigned char *pStr = str, nTemp;
+  if(radix>=2&&radix<=36)//   限制radix必须在2到36之间
+  {   
+    //      if(value<0&&radix == 10) //   如果是负数就在首位添加负号，并将字符串前移
+    //        {  
+    //          *pStr++ = '-';
+    //          value = -value;   //转为正数，
+    //        }
+    uint32_t nValue = *(uint32_t*)&value;
+    do
+    {              //   循环转换每一个数字，直到结束
+      pStr[++nCount] = szMap[ nValue%radix];
+      nValue /= radix;
+    }while( nValue > 0); //转换结束后字符串是翻的
+    nIndex = (nCount +1)/2;   //   计算出一半的长度
+    while(nIndex-- >0 )
+    {   //   将字符串的字符序翻转
+      nTemp   =   pStr[   nIndex   ];
+      pStr[   nIndex   ]   =   pStr[   nCount   -   nIndex   ];
+      pStr[   nCount   -   nIndex   ]   =   nTemp;
+    }
+  }
+  pStr[nCount + 1]='\0';   //   置结束符
+  return   str;
+}
+
+
+void Uart_SendResult(unsigned char num[])
+{
+  unsigned int i,j;
+  j=strlen(num);
+  for(i=0;i<j;i++) 
+    UART0Putchar(num[i]);
+  UART0Putchar('\r');
+  UART0Putchar('\n');
+}
+
+void Uart_SendData(unsigned char lengh,unsigned char *ptr)
+{
+  unsigned char i;
+  i=0;
+  while(i<lengh)
+  {
+    UART0Putchar(*(ptr++));
+    i++;
+  };
+}
+
+void Uart_SendString(unsigned char *str)
+{
+  while(*str!='\0')
+  {
+    UART0Putchar(*str);
+    str++;
+  }
+} 
